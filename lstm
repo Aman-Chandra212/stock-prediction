@@ -1,0 +1,171 @@
+import pandas as pd
+import os
+import numpy as np
+import requests
+import random
+from bs4 import BeautifulSoup
+import string
+import time
+from pandas_datareader import data as wb
+from datetime import datetime,timedelta
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.model_selection import train_test_split
+from matplotlib import pyplot as plt
+
+
+TIME_STEPS=60
+BATCH_SIZE=1
+FUTURE_PREDICT_PERIOD=3
+PRED_SYMB = 'FB'
+NAME = 'algTrad'
+def classify(current, future0,future1,future2):
+    if float(future0)> float(current):
+        return 1
+    elif float(future1)> float(current):
+        return 1
+    elif float(future2)> float(current):
+        return 1
+    else:
+        return 0
+
+
+
+#date = str((datetime.today() - timedelta(days=1)).strftime('%Y-%m-%d'))
+date = '2015-06-01'
+print(date)
+#symb = pd.read_csv(r'C:\Users\Aman Chandra\Downloads\bats_symbols.csv')['Name']
+#print(symb)
+
+#symb = symb[~symb.index.duplicated()]
+symb = ['FB']
+
+back_data_close = pd.DataFrame()
+back_data_volume = pd.DataFrame()
+
+for x in symb:
+    back_data_close['{}Close'.format(x)] = wb.DataReader(x, data_source='yahoo', start=date)['Adj Close'].reset_index(drop=True)
+    back_data_volume['{}Volume'.format(x)] = wb.DataReader(x, data_source='yahoo', start=date)['Volume'].reset_index(drop=True)
+df = pd.concat([back_data_close,back_data_volume], axis=1)
+
+
+for i in range(FUTURE_PREDICT_PERIOD):
+    df['future{}'.format(i)] = df['{}Close'.format(PRED_SYMB)].shift(-(FUTURE_PREDICT_PERIOD-i))
+print(df)
+df.dropna(inplace=True)
+print(df)
+    
+df['target'] = list(map(classify,df['{}Close'.format(PRED_SYMB)],df['future0'],df['future1'],df['future2']))
+
+from sklearn.preprocessing import scale
+
+
+
+def process(datf):
+    datf.dropna(inplace=True)
+    #datf['{}Close'.format(PRED_SYMB)] = datf['{}Close'.format(PRED_SYMB)].pct_change()
+
+    
+    for col in datf.columns:
+        if col != 'target':
+            datf[col] = scale(datf[col].values) 
+            datf[col] = datf[col].pct_change()
+            datf.dropna(inplace=True)
+            datf[col] = scale(datf[col].values)
+        
+    return datf
+            
+process(df)
+
+from collections import deque
+
+def series_get(datf):
+    #creates list of list of past days of length TIME_STEPS
+    sequential_data = []
+    past = deque(maxlen=TIME_STEPS)
+    
+    for i in datf.values:
+        past.append([x for x in i[0:2]])
+        if len(past) == TIME_STEPS:
+            sequential_data.append([np.array(past), [i[2],i[3],i[4]]])
+    #radomizes the list of lists        
+    random.shuffle(sequential_data)
+    '''
+    buys=[]
+    sells=[]
+    
+    for seq, target in sequential_data:
+        if target == 0:
+            sells.append([seq, target])
+        elif target == 1:
+            buys.append([seq, target])
+        
+    low = min(len(buys), len(sells))
+    buys = buys[:low]
+    sells = sells[:low]
+    '''
+    #sequential_data = buys+sells
+    random.shuffle(sequential_data)        
+    
+       
+    #separate features and classes
+    X=[]
+    Y=[]
+    
+    for seq, target in sequential_data:
+        X.append(seq)
+        Y.append(target)
+        
+    return np.array(X), np.array(Y)
+    
+
+#get X and Y from df
+
+x , y = series_get(df)
+    
+x_train , x_test = train_test_split(x, train_size=0.8, test_size=0.2, shuffle=False)
+y_train , y_test = train_test_split(y, train_size=0.8, test_size=0.2, shuffle=False)
+
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense , Dropout , LSTM , BatchNormalization, TimeDistributed
+from tensorflow.keras.callbacks import TensorBoard, ModelCheckpoint,CSVLogger
+
+#creating sequential LSTM
+model = Sequential()
+
+#adding LSTM layers
+model.add(LSTM(256, input_shape= x_train.shape[1:], return_sequences=True))
+model.add(Dropout(0.05))
+model.add(BatchNormalization())
+
+         
+model.add(LSTM(128, return_sequences=False))
+model.add(Dropout(0.05))
+model.add(BatchNormalization())
+
+model.add(Dense(64))
+model.add(Dense(3))
+
+#optimizer
+opt = tf.optimizers.Adam(lr=0.015, decay=1e-6)
+model.compile( loss='mse', optimizer=opt, metrics=['accuracy'])
+
+tensorboard = TensorBoard(log_dir='logs\{}'.format(NAME))
+csv_logger = CSVLogger(os.path.join(r'C:\Users\Aman Chandra\Documents\logs', 'tflog' + '.log'), append=True)
+
+
+history = model.fit(x_train, y_train,
+                    batch_size=1,
+                    epochs=69,
+                    validation_data=(x_test, y_test),
+                    callbacks=[tensorboard, csv_logger]
+)
+
+y_pred = model.predict([x_test],batch_size=1)
+y_pred1 = [y_pred[x][2] for x in range(len(y_pred))]
+y_actual = [y_test[x][2] for x in range(len(y_test))]
+plt.plot(y_pred1,color='orange')
+plt.plot(y_actual)
+plt.show()
+    
+
